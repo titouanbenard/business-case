@@ -2,16 +2,17 @@
    Modèle annuel, 100 % fonds propres, k€. Tout est hypothèse illustrative sauf mention. */
 (function(g){
 'use strict';
-const N=20,DEP=15,RDEP=10,RYEAR=10,IS=0.25,SURF=5000,KW=350;
+const N=20,DEP=15,RDEP=10,RYEAR=10,IS=0.25,SURF=5000,KW=375;
 /* Cas de base = scénario central ; il fige aussi la courbe de revenu net servant aux paliers de partage (L3). */
-const BASE={landPrice:110,grid:1.5,n:8,capexBorne:200,s1:4,kwh:300,price:0.45,cost:0.24,growth:0.08,cap:7,
-  opexCpo:25,taxeFonc:10,assur:0.004,frais:0.08,subv:0,renew:0.5,infl:0.02,wacc:0.08};
-const DEG=Object.assign({},BASE,{s1:2.8,growth:0.04,capexBorne:230,grid:1.95});
-const DEG_TXT='recharges −30 %, croissance 4 %, CAPEX par borne +15 %, raccordement +30 %';
+/* 8 points MCS (satellites jusqu'à ≈ 1 MW, armoires de puissance partagées sur ≈ 3 MW raccordés). floor = plancher L3 (part d’Atoms ≥ floor × sa part au cas de base). */
+const BASE={landPrice:110,grid:1.5,n:8,capexBorne:250,s1:4,kwh:350,price:0.45,cost:0.24,growth:0.08,cap:7,
+  opexCpo:25,taxeFonc:10,assur:0.004,frais:0.08,subv:0,renew:0.5,infl:0.02,wacc:0.08,floor:0.75};
+const DEG=Object.assign({},BASE,{s1:2.8,growth:0.04,capexBorne:287.5,grid:1.95});
+const DEG_TXT='recharges −30 %, croissance 4 %, CAPEX par point +15 %, raccordement +30 %';
 
 function netCurve(p){const o=[];for(let t=1;t<=N;t++){const s=Math.min(p.cap,p.s1*Math.pow(1+p.growth,t-1));
   o.push(p.n*s*p.kwh*365*Math.max(0,p.price-p.cost)/1000);}return o;}
-const BC=netCurve(BASE);
+const BC=netCurve(BASE),BT=(SURF*BASE.landPrice/1000+BASE.grid*1000+BASE.n*BASE.capexBorne*(1-BASE.subv))*(1+BASE.frais);
 /* Paliers L3 par tranches : 50 % jusqu'à 150 % du cas de base, puis 45 / 40 / 35 % */
 function atomsShare(x,b){if(b<=0)return .5*x;const r=x/b,seg=(a,c)=>Math.max(0,Math.min(r,c)-a);
   return b*(.5*seg(0,1.5)+.45*seg(1.5,2)+.40*seg(2,2.5)+.35*Math.max(0,r-2.5));}
@@ -22,18 +23,24 @@ function run(p){
   const land=SURF*p.landPrice/1000,grid=p.grid*1000,bornes=p.n*p.capexBorne*(1-p.subv),
     sub=land+grid+bornes,frais=sub*p.frais,total=sub+frais,
     dep0=(total-land)/DEP,rc=p.renew*p.n*p.capexBorne,net=netCurve(p);
-  let loss=0;const cf=[-total],cum=[-total],o={net,dep:[],ti:[],ebitda:[],opexA:[],cpoShare:[],cpoOpex:[],cpoM:[],tax:[],aShare:[]};
+  let loss=0,owed=0,comp=0;const cf=[-total],cum=[-total],o={net,dep:[],ti:[],ebitda:[],opexA:[],cpoShare:[],cpoOpex:[],cpoM:[],tax:[],aShare:[],fl:[]};
   for(let t=1;t<=N;t++){
-    const i=Math.pow(1+p.infl,t-1),x=net[t-1],a=atomsShare(x,BC[t-1]),c=x-a,
-      oa=(p.taxeFonc+p.assur*total)*i,oc=p.n*p.opexCpo*i,e=a-oa;
+    const i=Math.pow(1+p.infl,t-1),x=net[t-1],a0=atomsShare(x,BC[t-1]),
+      oa=(p.taxeFonc+p.assur*total)*i,oc=p.n*p.opexCpo*i;
+    /* Plancher L3 : dès l'an 3, part d'Atoms ≥ floor × sa part au cas de base ; le CPO paie le complément,
+       remboursé sur la part d'Atoms au-dessus du cas de base. */
+    let a=a0,fl=0;
+    if(t>=3&&p.floor>0){const need=p.floor*atomsShare(BC[t-1],BC[t-1]);if(a<need){fl=need-a;a=need;owed+=fl;comp+=fl;}}
+    if(owed>0&&fl===0){const rb=Math.min(owed,Math.max(0,a0-atomsShare(BC[t-1],BC[t-1])));a-=rb;owed-=rb;}
+    const c=x-a,e=a-oa;
     const d=(t<=DEP?dep0:0)+(t>RYEAR?rc/RDEP:0),ti=e-d;let tax=0;
     if(ti<0)loss+=-ti;else{const u=Math.min(loss,ti);loss-=u;tax=IS*(ti-u);}
     const f=e-tax-(t===RYEAR?rc:0);
     cf.push(f);cum.push(cum[t-1]+f);
-    o.dep.push(d);o.ti.push(ti);o.ebitda.push(e);o.opexA.push(oa);o.cpoShare.push(c);o.cpoOpex.push(oc);o.cpoM.push(c-oc);o.tax.push(tax);o.aShare.push(a);
+    o.dep.push(d);o.ti.push(ti);o.ebitda.push(e);o.opexA.push(oa);o.cpoShare.push(c);o.cpoOpex.push(oc);o.cpoM.push(c-oc);o.tax.push(tax);o.aShare.push(a);o.fl.push(fl);
   }
   let pb=null;for(let t=1;t<=N;t++){if(cum[t]>=0){pb=(t-1)+(-cum[t-1])/(cf[t]||1);break;}}
-  return Object.assign(o,{land,grid,bornes,frais,total,cf,cum,irr:irr(cf),npv:npv(p.wacc,cf),yoc:o.ebitda[0]/total,pb,rc});
+  return Object.assign(o,{comp,land,grid,bornes,frais,total,cf,cum,irr:irr(cf),npv:npv(p.wacc,cf),yoc:o.ebitda[2]/total,pb,rc});
 }
 
 /* ---------- format ---------- */
@@ -46,18 +53,20 @@ const CTL=[
  {g:'Site et CAPEX',it:[
   {k:'landPrice',l:'Prix du terrain (5 000 m²)',min:30,max:150,step:5,f:v=>nf(v)+' €/m²',note:'Annonce : 110 €/m² · cible L4 ≈ 45'},
   {k:'grid',l:'Raccordement réseau (poste HTA inclus)',min:.5,max:4,step:.1,f:v=>nf(v,1)+' M€',note:'Hypothèse : ≈ 3 MW, à confirmer par pré-étude Enedis'},
-  {k:'n',l:'Nombre de bornes',min:4,max:16,step:1,f:v=>nf(v),note:()=>S.n>8?'Au-delà de 8 : phase 2, lot voisin et renfort réseau à prévoir':'8 postes sur le plan L4'},
-  {k:'capexBorne',l:'CAPEX par borne (installé)',min:150,max:400,step:10,f:v=>nf(v)+' k€'}]},
+  {k:'n',l:'Nombre de points MCS',min:4,max:16,step:1,f:v=>nf(v),note:()=>S.n>8?'Au-delà de 8 : phase 2, lot voisin et renfort réseau à prévoir':'8 postes sur le plan L4'},
+  {k:'capexBorne',l:'CAPEX par point MCS (installé)',min:150,max:450,step:10,f:v=>nf(v)+' k€',note:'Hypothèse : satellite MCS + part des armoires de puissance partagées'}]},
  {g:'Recharge et revenus',it:[
-  {k:'s1',l:'Recharges par borne et par jour (an 1)',min:1,max:8,step:.1,f:v=>nf(v,1),note:()=>'Taux d’utilisation ≈ '+nf(S.s1*S.kwh/(KW*24)*100,0)+' % (borne 350 kW)'},
+  {k:'s1',l:'Recharges par borne et par jour (an 1)',min:1,max:8,step:.1,f:v=>nf(v,1),note:()=>'Taux d’utilisation ≈ '+nf(S.s1*S.kwh/(KW*24)*100,0)+' % (375 kW moyens par point : 3 MW partagés)'},
   {k:'price',l:'Prix de vente',min:.35,max:.65,step:.01,f:v=>nf(v,2)+' €/kWh'},
   {k:'cost',l:'Coût de l’électricité',min:.12,max:.34,step:.01,f:v=>nf(v,2)+' €/kWh',note:()=>'Marge brute '+nf(Math.max(0,S.price-S.cost),2)+' €/kWh (L1 : 0,20–0,22)'},
   {k:'growth',l:'Croissance annuelle du revenu',min:0,max:.12,step:.01,f:v=>nf(v*100,0)+' %',note:()=>'Portée par le volume, plafonnée à '+nf(S.cap,0)+' recharges/jour'}]},
+ {g:'Partage et plancher (L3)',it:[
+  {k:'floor',l:'Plancher : % de la part d’Atoms au cas de base, dès l’an 3',min:0,max:1,step:.05,f:v=>nf(v*100,0)+' %',note:()=>{const r=run(S);return r.comp>0?'Complément payé par le CPO : '+nf(r.comp)+' k€ sur 20 ans':'Non déclenché dans ce scénario';}}]},
  {g:'Exploitation (Atoms)',it:[
   {k:'taxeFonc',l:'Taxe foncière (Atoms)',min:0,max:40,step:1,f:v=>nf(v)+' k€/an'},
   {k:'assur',l:'Assurance (Atoms)',min:0,max:.01,step:.001,f:v=>nf(v*100,1)+' % du CAPEX'}]},
  {g:'Hypothèses avancées',adv:1,it:[
-  {k:'kwh',l:'Énergie par recharge',min:200,max:450,step:10,f:v=>nf(v)+' kWh'},
+  {k:'kwh',l:'Énergie par recharge',min:200,max:450,step:10,f:v=>nf(v)+' kWh',note:'MCS : 20 à 80 % d’une batterie de ≈ 600 kWh en ≈ 40 min'},
   {k:'cap',l:'Plafond de saturation',min:4,max:10,step:.5,f:v=>nf(v,1)+' recharges/jour'},
   {k:'frais',l:'Frais de développement et imprévus',min:0,max:.15,step:.01,f:v=>nf(v*100,0)+' % du CAPEX'},
   {k:'subv',l:'Subvention sur les bornes',min:0,max:.5,step:.05,f:v=>nf(v*100,0)+' %',note:'France : Advenir jusqu’à 50 % par point PL (L1), plafond à confirmer'},
@@ -132,33 +141,37 @@ function topKeys(){
     return[t[0],Math.abs(val(run(b))-val(run(a)))];}).sort((p,q)=>q[1]-p[1]).slice(0,4).map(p=>p[0]);
 }
 const CAPC=[['Terrain','land','#9a9a94'],['Raccordement','grid','#74746f'],['Bornes','bornes','#b9b9b2'],['Frais et imprévus','frais','#52524f']];
-const NEG={opex:'#85857f',tax:'#5f5f5b',ren:'#a9a9a2'},POS='#E3C38F';
+const NEG={opex:'#85857f',tax:'#5f5f5b',ren:'#a9a9a2'},POS='#E3C38F',FLC='#7FB8A4';
 let SEL={t:1,c:'rev'};
 function chartFlows(r){
-  const W=640,H=232,L=54,R=48,T=12,B=24,iw=W-L-R,ih=H-T-B,n=N+1,bw=iw/n;
-  const maxP=niceMax(Math.max.apply(null,r.aShare)),minN=-niceMax(r.total),Y=v=>T+ih*(maxP-v)/(maxP-minN);
-  const cmax=Math.max(1,Math.max.apply(null,r.cum)),cmin=Math.min.apply(null,r.cum),Y0=Y(0),sc=Math.min((Y0-T)/cmax,(T+ih-Y0)/Math.max(1,-cmin)),YC=v=>Y0-v*sc,cx=t=>L+(t+.5)*bw;
-  const step=niceMax((maxP-minN)/4);let s='';
+  const W=900,H=200,L=34,R=8,T=14,B=34,iw=W-L-R,ih=H-T-B,n=N+1,bw=iw/n;
+  const maxP=Math.max(1000,Math.ceil(Math.max.apply(null,r.aShare)/1000)*1000),minN=-(Math.floor(r.total/1000)+1)*1000,Y=v=>T+ih*(maxP-v)/(maxP-minN);
+  const Y0=Y(0),cx=t=>L+(t+.5)*bw;
+  const step=1000;let s='';
   for(let v=Math.ceil(minN/step)*step;v<=maxP+1e-9;v+=step){const y=Y(v);
-    s+=`<line x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${Math.abs(v)<1e-9?'rgba(255,247,221,.55)':'rgba(255,255,255,.08)'}"/><text x="${L-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="11" fill="#9d9582">${nf(v)}</text>`;}
-  for(let t=0;t<=N;t++){const on=SEL.t===t&&SEL.c==='year';s+=`<rect class="l5col" data-t="${t}" data-c="year" x="${(L+t*bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${ih}" fill="${on?'rgba(255,247,221,.1)':'transparent'}"/>`;}
-  if(SEL.t>=0&&SEL.c!=='year')s+=`<rect x="${(L+SEL.t*bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${ih}" fill="rgba(255,247,221,.06)" pointer-events="none"/>`;
+    s+=`<line x1="${L}" x2="${W-R}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${Math.abs(v)<1e-9?'rgba(255,247,221,.55)':'rgba(255,255,255,.08)'}"/><text x="${L-6}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="9" fill="#9d9582">${nf(v/1000)}</text>`;}
+  for(let t=0;t<=N;t++){const on=SEL.t===t&&SEL.c==='year';s+=`<rect class="l5col" data-t="${t}" data-c="year" x="${(L+t*bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${ih+B-4}" fill="${on?'rgba(255,247,221,.1)':'transparent'}"/>`;}
+  if(SEL.t>=0&&SEL.c!=='year')s+=`<rect x="${(L+SEL.t*bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${ih+B-4}" fill="rgba(255,247,221,.06)" pointer-events="none"/>`;
   const bar=(i,v0,v1,c,k)=>{const x=L+i*bw+bw*.14,w=bw*.72,y0=Y(v0),y1=Y(v1),on=SEL.t===i&&SEL.c===k;
     return `<rect class="l5seg" data-t="${i}" data-c="${k}" x="${x.toFixed(1)}" y="${Math.min(y0,y1).toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(.8,Math.abs(y1-y0)).toFixed(1)}" fill="${c}"${on?' stroke="#FFF7DD" stroke-width="1.6"':''}/>`;};
   let cum=0;CAPC.forEach(c=>{s+=bar(0,-cum,-(cum+r[c[1]]),c[2],c[1]);cum+=r[c[1]];});
   for(let t=1;t<=N;t++){
-    s+=bar(t,0,r.aShare[t-1],POS,'rev');
+    const fl=r.fl[t-1];s+=bar(t,0,r.aShare[t-1]-fl,POS,'rev');if(fl>0)s+=bar(t,r.aShare[t-1]-fl,r.aShare[t-1],FLC,'floor');
     let c=0;[[r.opexA[t-1],NEG.opex,'opex'],[r.tax[t-1],NEG.tax,'tax'],[t===RYEAR?r.rc:0,NEG.ren,'ren']].forEach(a=>{if(a[0]>0){s+=bar(t,-c,-(c+a[0]),a[1],a[2]);c+=a[0];}});
   }
-  for(let t=0;t<=N;t++){s+=`<text x="${cx(t).toFixed(1)}" y="${H-7}" text-anchor="middle" font-size="${t%5===0?11:9.5}" fill="${t%5===0?'#c9c2ae':'#8a846f'}" pointer-events="none">${t}</text>`;}
-  const cs=Math.max(.5,Math.ceil(Math.max(cmax,-cmin)/1000/3*2)/2);
-  for(let v=Math.ceil(cmin/1000/cs)*cs;v<=cmax/1000+1e-9;v+=cs){s+=`<text x="${W-R+6}" y="${(YC(v*1000)+4).toFixed(1)}" font-size="10.5" fill="#E9A23B" pointer-events="none">${nf(v,cs%1?1:0)}</text>`;}
-  s+=`<text x="${W-2}" y="${T-2}" text-anchor="end" font-size="9.5" fill="#E9A23B" pointer-events="none">cumul M€</text>`;
+  for(let t=0;t<=N;t++){s+=`<text x="${cx(t).toFixed(1)}" y="${T+ih+12}" text-anchor="middle" font-size="${t%5===0?9:8}" fill="${t%5===0?'#c9c2ae':'#8a846f'}" pointer-events="none">${t}</text><text x="${cx(t).toFixed(1)}" y="${T+ih+26}" text-anchor="middle" font-size="7.5" fill="${r.cum[t]>=0?'#7CC58A':'#E9A23B'}" pointer-events="none">${nf(r.cum[t]/1000,1)}</text>`;}
+  
+  s+=`<text x="${L-6}" y="${T+ih+12}" text-anchor="end" font-size="7.5" fill="#9d9582" pointer-events="none">an</text><text x="${L-6}" y="${T+ih+26}" text-anchor="end" font-size="7.5" fill="#E9A23B" pointer-events="none">cumul</text>`;
+  
+  
+  
+  /* Courbe de trésorerie cumulée : échelle propre, zéro aligné sur l'axe des flux ; valeurs en M€ sous les années */
+  const cmax=Math.max(1,Math.max.apply(null,r.cum)),cmin=Math.min.apply(null,r.cum),sc=Math.min((Y0-T)/cmax,(T+ih-Y0)/Math.max(1,-cmin)),YC=v=>Y0-v*sc;
   s+=`<path d="${r.cum.map((v,t)=>(t?'L':'M')+cx(t).toFixed(1)+' '+YC(v).toFixed(1)).join('')}" fill="none" stroke="#E9A23B" stroke-width="2.2" stroke-linejoin="round" pointer-events="none"/>`;
   r.cum.forEach((v,t)=>{const on=SEL.t===t;s+=`<circle class="l5col" data-t="${t}" data-c="year" cx="${cx(t).toFixed(1)}" cy="${YC(v).toFixed(1)}" r="${on?5:3.2}" fill="${on?'#FFF7DD':'#E9A23B'}" stroke="#0a0a09" stroke-width="1"/>`;});
-  if(r.pb!=null){const px=L+(r.pb+.5)*bw;s+=`<circle cx="${px.toFixed(1)}" cy="${Y0.toFixed(1)}" r="4.5" fill="#0a0a09" stroke="#FFF7DD" stroke-width="1.8" pointer-events="none"/><text x="${px.toFixed(1)}" y="${(Y0+22).toFixed(1)}" text-anchor="middle" font-size="11" fill="#FFF7DD" stroke="#0a0a09" stroke-width="4" paint-order="stroke" pointer-events="none">payback ${nf(r.pb,1)} ans</text>`;}
-  s+=`<text x="${(L+bw*1.4).toFixed(1)}" y="${Y(-r.total*.55).toFixed(1)}" font-size="12" fill="#FFF7DD" pointer-events="none">◀ Investissement initial : ${nf(r.total/1000,1)} M€</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Flux annuels d'Atoms sur 20 ans : investissement initial en année 0, puis revenus en positif et coûts en négatif, en k€. Cliquer sur une barre pour voir le calcul.">${s}</svg>`;
+  if(r.pb!=null){const px=L+(r.pb+.5)*bw;s+=`<circle cx="${px.toFixed(1)}" cy="${Y0.toFixed(1)}" r="4.5" fill="#0a0a09" stroke="#FFF7DD" stroke-width="1.8" pointer-events="none"/><text x="${px.toFixed(1)}" y="${(Y0+22).toFixed(1)}" text-anchor="middle" font-size="9.5" fill="#FFF7DD" stroke="#0a0a09" stroke-width="4" paint-order="stroke" pointer-events="none">payback ${nf(r.pb,1)} ans</text>`;}
+  s+=`<text x="${(L+bw*1.4).toFixed(1)}" y="${Y(-r.total*.55).toFixed(1)}" font-size="10" fill="#FFF7DD" pointer-events="none">◀ Investissement initial : ${nf(r.total/1000,1)} M€</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Flux annuels d'Atoms sur 20 ans : investissement initial en année 0, puis revenus en positif et coûts en négatif, en M€, avec le cumul de trésorerie en M€ sous les années. Cliquer sur une barre pour voir le calcul.">${s}</svg>`;
 }
 function detail(r){
   const t=SEL.t,c=SEL.c,k=v=>nf(v)+' k€',L=[];let h='';
@@ -172,19 +185,21 @@ function detail(r){
     else{h=head('Année 0 · investissement',k(r.total));L.push(`Terrain ${k(r.land)} + raccordement ${k(r.grid)} + bornes ${k(r.bornes)} + frais ${k(r.frais)}.`,'Financé à 100 % en fonds propres ; amorti sur 15 ans hors terrain.');}
     if(c!=='year')L.push(`Part de l’investissement total (${k(r.total)}) : ${nf((c==='land'?r.land:c==='grid'?r.grid:c==='bornes'?r.bornes:r.frais)/r.total*100)} %.`);
   }else{
-    const i=t-1,x=r.net[i],a=r.aShare[i],sess=Math.min(S.cap,S.s1*Math.pow(1+S.growth,i)),idx=Math.pow(1+S.infl,i);
+    const i=t-1,x=r.net[i],a=r.aShare[i]-r.fl[i],sess=Math.min(S.cap,S.s1*Math.pow(1+S.growth,i)),idx=Math.pow(1+S.infl,i);
     if(c==='rev'){h=head(`Revenu d’Atoms · année ${t}`,'+'+k(a));
       L.push(`Revenu net = ${S.n} bornes × ${nf(sess,1)} recharges/jour × 365 × ${nf(S.kwh)} kWh × (${nf(S.price,2)} − ${nf(S.cost,2)}) €/kWh = ${k(x)}`,
         `Recharges/jour : ${nf(S.s1,1)} en an 1, +${nf(S.growth*100)} %/an, plafonné à ${nf(S.cap,1)}.`,
         `Part d’Atoms (L3) : ${k(a)}, soit ${nf(a/x*100)} % du revenu net (50 % jusqu’à 150 % du cas de base, puis 45, 40 et 35 % par tranches).`);}
+    else if(c==='floor'){h=head(`Complément plancher · année ${t}`,'+'+k(r.fl[i]));
+      L.push(`Plancher (L3) : ${nf(S.floor*100,0)} % × part d’Atoms au cas de base ${k(atomsShare(BC[i],BC[i]))} = ${k(S.floor*atomsShare(BC[i],BC[i]))}`,`Part d’Atoms avant plancher ${k(a-r.fl[i])} : le CPO paie le complément de ${k(r.fl[i])}.`,'Remboursé au CPO sur la part d’Atoms au-dessus du cas de base.');}
     else if(c==='opex'){h=head(`OPEX d’Atoms · année ${t}`,'−'+k(r.opexA[i]));
       L.push(`(taxe foncière ${nf(S.taxeFonc)} k€ + assurance ${nf(S.assur*100,1)} % × ${k(r.total)}) × indexation ${nf(idx,3)} = ${k(r.opexA[i])}`,`Indexation : ${nf(S.infl*100,1)} %/an. L’exploitation des bornes ne pèse pas sur Atoms.`);}
     else if(c==='tax'){h=head(`Impôt · année ${t}`,'−'+k(r.tax[i]));
-      L.push(`EBITDA ${k(r.ebitda[i])} − amortissement ${k(r.dep[i])} = résultat imposable ${k(r.ti[i])}`,r.tax[i]>0?`IS 25 % sur ce résultat, après imputation des déficits reportés = ${k(r.tax[i])}`:'Résultat négatif ou absorbé par les déficits reportés : pas d’impôt cette année.');}
+      L.push(`NOI ${k(r.ebitda[i])} − amortissement ${k(r.dep[i])} = résultat imposable ${k(r.ti[i])}`,r.tax[i]>0?`IS 25 % sur ce résultat, après imputation des déficits reportés = ${k(r.tax[i])}`:'Résultat négatif ou absorbé par les déficits reportés : pas d’impôt cette année.');}
     else if(c==='ren'){h=head(`Renouvellement des bornes · année ${t}`,'−'+k(r.rc));
       L.push(`${nf(S.renew*100)} % × ${S.n} bornes × ${nf(S.capexBorne)} k€ = ${k(r.rc)}`,'Dépense de l’année 10, amortie sur 10 ans à partir de l’année 11.');}
     else{const f=r.cf[t];h=head(`Année ${t} · flux net`,(f>=0?'+':'−')+k(Math.abs(f)));
-      L.push(`Revenu ${k(a)} − OPEX ${k(r.opexA[i])} − impôt ${k(r.tax[i])}${t===RYEAR?` − renouvellement ${k(r.rc)}`:''} = ${(f>=0?'+':'−')+k(Math.abs(f))}`,`Trésorerie cumulée : ${(r.cum[t]>=0?'+':'−')+k(Math.abs(r.cum[t]))}.`);}
+      L.push(`Revenu ${k(a)}${r.fl[i]>0?' + plancher '+k(r.fl[i]):''} − OPEX ${k(r.opexA[i])} − impôt ${k(r.tax[i])}${t===RYEAR?` − renouvellement ${k(r.rc)}`:''} = ${(f>=0?'+':'−')+k(Math.abs(f))}`,`Trésorerie cumulée : ${(r.cum[t]>=0?'+':'−')+k(Math.abs(r.cum[t]))}.`);}
   }
   return `<div class="l5dh">${h}</div>`+L.map(l=>`<p>${l}</p>`).join('');
 }
@@ -204,12 +219,11 @@ function update(){
   const head=document.getElementById('l5h'),sub=document.getElementById('l5sub');
   const verdict=r.irr==null?'le capital n’est pas remboursé en 20 ans':d>=.02?nf(d*100,1)+' pts au-dessus du WACC':d>=-.005?'au niveau du WACC, sans marge de sécurité':'sous le WACC de '+pct(S.wacc);
   if(head)head.textContent=`TRI de ${pct(r.irr)} pour ${nf(r.total/1000,1)} M€ investis : ${verdict}`;
-  if(sub)sub.textContent=`Dégradé (${DEG_TXT}) : TRI ${pct(rd.irr)}, payback ${rd.pb==null?'> 20':nf(rd.pb,0)} ans. Revenu net partagé selon L3 ; 100 % fonds propres ; valeur résiduelle du terrain ignorée.`;
+  if(sub)sub.textContent=`Dégradé (${DEG_TXT}) : TRI ${pct(rd.irr)}, payback ${rd.pb==null?'> 20':nf(rd.pb,0)} ans, plancher L3 à ${nf(DEG.floor*100,0)} % du cas de base (${nf(rd.comp)} k€ payés par le CPO). 8 points MCS ; revenu net partagé selon L3 ; 100 % fonds propres ; sans valeur résiduelle.`;
   root.querySelector('#l5k').innerHTML=
    `<div class="kp big ${cls}"><div class="t">TRI après impôt · 20 ans</div><div class="v">${pct(r.irr)}</div><div class="s">WACC ${pct(S.wacc)}${d==null?'':' · '+(d>=0?'+':'−')+nf(Math.abs(d)*100,1)+' pt'}</div></div>`+
-   `<div class="kp"><div class="t">Rendement sur coût</div><div class="v">${pct(r.yoc)}</div><div class="s">EBITDA an 1 / CAPEX</div></div>`+
    `<div class="kp"><div class="t">Payback</div><div class="v">${r.pb==null?'> 20 ans':nf(r.pb,1)+' ans'}</div><div class="s">cumul de trésorerie ≥ 0</div></div>`+
-   `<div class="kp ${r.npv>=0?'g':'o'}"><div class="t">VAN au WACC</div><div class="v">${r.npv>=0?'+':'−'}${nf(Math.abs(r.npv)/1000,2)} M€</div><div class="s">flux 0–20 ans</div></div>`;
+   `<div class="kp"><div class="t">NOI / CAPEX · an 3</div><div class="v">${pct(r.yoc)}</div><div class="s">NOI = part d’Atoms − ses OPEX, avant impôt</div></div>`;
   root.querySelector('#l5f').innerHTML=chartFlows(r);root.querySelector('#l5d').innerHTML=detail(r);window.__l5r=r;
 }
 
@@ -224,13 +238,13 @@ const CSS=`.l5seg,.l5col{cursor:pointer}.l5seg:hover{filter:brightness(1.25)}.l5
 .l5r label{color:var(--ink2)}.l5r output{color:var(--cream);font-family:"Fragment Mono",monospace;font-size:12px;white-space:nowrap}
 .l5r input{grid-column:1/-1;width:100%;margin:3px 0 0;accent-color:#C8AD86}.l5r small{grid-column:1/-1;color:var(--ink2);font-size:11px;opacity:.85;line-height:1.3}
 .l5o{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto;scrollbar-width:thin}
-.l5k{display:grid;grid-template-columns:1.2fr repeat(3,minmax(0,1fr));gap:8px}
+.l5k{display:grid;grid-template-columns:1.2fr repeat(2,minmax(0,1fr));gap:8px}
 .kp{border:1px solid var(--line);border-radius:4px;background:var(--card);padding:7px 10px;min-width:0}
 .kp .t{font:400 10.5px "Fragment Mono",monospace;color:var(--ink2);text-transform:uppercase;letter-spacing:.02em}
 .kp .v{font-size:clamp(19px,3vh,27px);color:var(--cream);line-height:1.15;white-space:nowrap}.kp .s{font-size:11.5px;color:var(--ink2)}
 .kp.big{border-color:rgba(200,173,134,.5)}.kp.g .v{color:#7CC58A}.kp.o .v{color:#E9A23B}.kp.r .v{color:#E26D5A}
 .l5ch,.l5bt{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
-.l5o .pan svg{width:100%;height:auto;display:block}.l5o .pan .cap{align-items:center}
+.l5o .pan svg{width:100%;height:auto;display:block}#l5f svg{max-height:30vh}.l5o .pan .cap{align-items:center}
 .l5leg{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);padding:2px 9px 7px}.l5leg i{display:inline-block;width:9px;height:9px;margin-right:5px}
 .tor{padding:6px 9px 8px;display:grid;gap:5px}.tr{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1.4fr) 82px;gap:8px;align-items:center;font-size:12px;color:var(--ink2)}
 .tl i{font-style:normal;color:var(--gold);font-size:11px;margin-left:3px}.tb{position:relative;height:13px;background:rgba(255,255,255,.05);border-radius:2px}
@@ -247,8 +261,8 @@ function init(el){
   const st=document.createElement('style');st.textContent=CSS;document.head.appendChild(st);
   el.innerHTML=`<div class="l5c"><p class="l5lg"><i></i>Les 4 paramètres qui font le plus bouger le TRI</p>${ctlHTML()}</div>
   <div class="l5o"><div class="l5k" id="l5k"></div>
-   <div class="pan l5fl"><div class="cap"><span>Flux annuels d’Atoms, k€</span><b>revenus en positif · coûts en négatif</b></div><div id="l5f"></div><div class="l5d" id="l5d" aria-live="polite"></div>
-    <div class="l5leg"><span><i style="background:#E3C38F"></i>Revenu d’Atoms</span><span><i style="background:#E9A23B;height:3px;vertical-align:middle"></i>Trésorerie cumulée</span><span><i style="background:#9a9a94"></i>Terrain</span><span><i style="background:#74746f"></i>Raccordement</span><span><i style="background:#b9b9b2"></i>Bornes</span><span><i style="background:#52524f"></i>Frais</span><span><i style="background:#85857f"></i>OPEX</span><span><i style="background:#5f5f5b"></i>Impôt</span><span><i style="background:#a9a9a2"></i>Renouvellement</span><em>Cliquer sur une barre ou une année</em></div></div>
+   <div class="pan l5fl"><div class="cap"><span>Flux annuels d’Atoms, M€</span><b>revenus en positif · coûts en négatif</b></div><div id="l5f"></div><div class="l5d" id="l5d" aria-live="polite"></div>
+    <div class="l5leg"><span><i style="background:#E3C38F"></i>Revenu d’Atoms</span><span><i style="background:#7FB8A4"></i>Complément plancher (CPO)</span><span><i style="background:#E9A23B;height:3px;vertical-align:middle"></i>Trésorerie cumulée (courbe ; M€ sous les années)</span><span><i style="background:#9a9a94"></i>Terrain</span><span><i style="background:#74746f"></i>Raccordement</span><span><i style="background:#b9b9b2"></i>Bornes</span><span><i style="background:#52524f"></i>Frais</span><span><i style="background:#85857f"></i>OPEX</span><span><i style="background:#5f5f5b"></i>Impôt</span><span><i style="background:#a9a9a2"></i>Renouvellement</span><em>Cliquer sur une barre ou une année</em></div></div>
   </div>`;
   const top=topKeys();top.forEach(k=>{const i=el.querySelector('#l5-'+k);if(i)i.closest('.l5r').classList.add('hl');});
   el.addEventListener('click',e=>{const t=e.target.closest('.l5seg,.l5col');if(!t||!el.contains(t))return;SEL={t:+t.dataset.t,c:t.dataset.c};update();});

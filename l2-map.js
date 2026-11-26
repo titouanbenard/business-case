@@ -3,10 +3,12 @@ window.L2Map = (function () {
   const NS = "http://www.w3.org/2000/svg";
   const C = { sel: "#2d2820", selB: "#6b5d42", scope: "#211f1b", out: "#1b1b1a", outB: "#262626", axis: "#A8B3BF", partner: "#6FB3A2",
     comp: "#B9B9B2", zone: "#E3C38F", ok: "#7CC58A", reinf: "#E9A23B", ko: "#E0664C", text: "#FFF7DD", muted: "rgba(255,247,221,.62)" };
-  const CHIPS = [["zones", "Zones cibles", "background:#E3C38F;height:4px;width:16px;border-radius:2px"],
-    ["partner", "Partenaire (réf. Milence)", "background:#6FB3A2;border-radius:50%"], ["comp", "Concurrence", "background:#B9B9B2"], ["axes", "Axes RTE-T (épaisseur = trafic PL, hyp.)", "background:#A8B3BF;height:5px;width:16px;border-radius:3px"],
+  const CHIPS = [["axes", "Axes RTE-T (épaisseur = trafic PL, hyp.)", "background:#A8B3BF;height:5px;width:16px;border-radius:3px"],
     ["grid-ok", "Réseau : capacité (proxy)", "border:1.5px dashed #7CC58A;border-radius:50%"], ["grid-reinf", "Réseau : renforcement prévu", "border:1.5px dashed #E9A23B;border-radius:50%"],
-    ["grid-ko", "Réseau : congestion publiée", "background:repeating-linear-gradient(45deg,#E0664C 0 2px,transparent 2px 5px);border:1px solid #E0664C;border-radius:50%"]];
+    ["grid-ko", "Réseau : congestion publiée", "background:repeating-linear-gradient(45deg,#E0664C 0 2px,transparent 2px 5px);border:1px solid #E0664C;border-radius:50%"],
+    ["partner", "Partenaire (réf. Milence)", "background:#6FB3A2;border-radius:50%;border:1.5px solid #000"], ["comp", "Concurrence", "background:#B9B9B2"],
+    ["zones", "Zones cibles", "background:#E3C38F;height:4px;width:16px;border-radius:2px"]];
+  const STEPS = [["axes"], ["grid-ok", "grid-reinf", "grid-ko"], ["partner", "comp"], ["zones"]];
   const KIND = { p: "Partenaire (réf. Milence) · en service", pd: "Partenaire (réf. Milence) · en développement", c: "ENGIE Vianeo · en service",
     cd: "ENGIE Vianeo · prévu 2027", cf: "Concurrent fictif · illustratif", ok: "Réseau · capacité (proxy)", reinf: "Réseau · renforcement prévu", ko: "Réseau · congestion publiée" };
   const el = (n, a = {}, p) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
@@ -65,7 +67,7 @@ window.L2Map = (function () {
       const g = el("g", { "data-t": "p", "data-i": i, style: "cursor:pointer", class: "st" }, oP[ly]);
       el("circle", { r: 12, fill: "transparent" }, g);
       if (p.k === "p") el("circle", { r: 5.5, fill: C.partner, stroke: "#000", "stroke-width": 2 }, g);
-      else if (p.k === "pd") el("circle", { r: 4.8, fill: "#000", stroke: C.partner, "stroke-width": 2.6 }, g);
+      else if (p.k === "pd") el("circle", { r: 5.5, fill: C.partner, "fill-opacity": 0.6, stroke: "#000", "stroke-width": 2 }, g);
       else if (p.k === "c") el("rect", { x: -5, y: -5, width: 10, height: 10, fill: C.comp, stroke: "#000", "stroke-width": 1.8 }, g);
       else if (p.k === "cd") el("rect", { x: -5.5, y: -5.5, width: 11, height: 11, fill: "#000", stroke: C.comp, "stroke-width": 2.4 }, g);
       else el("rect", { x: -5, y: -5, width: 10, height: 10, fill: "#000", stroke: C.comp, "stroke-width": 2, "stroke-dasharray": "3 2" }, g);
@@ -171,6 +173,25 @@ window.L2Map = (function () {
       k = Math.min(9, Math.max(1, Math.min(W / bw, H / bh))); tx = W / 2 - k * (bb[0] + bb[2]) / 2; ty = H / 2 - k * (bb[1] + bb[3]) / 2; clamp(); }
     render();
     new ResizeObserver(() => render()).observe(root);
+    if (o.revealOnNext) {
+      const pg = root.closest(".pg"), deck = pg && pg.parentNode;
+      const onPg = () => deck && Math.abs(pg.offsetTop - deck.scrollTop) < pg.clientHeight * 0.3;
+      const chipsAll = () => [...o.chips.querySelectorAll(".chip")];
+      let si = 0, cool = 0;
+      const allOn = () => si >= STEPS.length;
+      const showAll = () => { const ls = STEPS[si++] || []; ls.forEach((l) => { const b = o.chips.querySelector('.chip[data-ly="' + l + '"]'); if (b) b.setAttribute("aria-pressed", "true"); root.querySelectorAll(".ly-" + l).forEach((g) => (g.style.display = "")); }); render(); cool = performance.now() + 700; };
+      o.chips.addEventListener("click", () => { si = STEPS.findIndex((st) => st.some((l) => { const b = o.chips.querySelector('.chip[data-ly="' + l + '"]'); return !b || b.getAttribute("aria-pressed") !== "true"; })); if (si < 0) si = STEPS.length; });
+      window.addEventListener("keydown", (e) => {
+        if (!["ArrowDown", "PageDown", " ", "ArrowRight"].includes(e.key) || !onPg() || allOn()) return;
+        if (e.target.closest && e.target.closest("input,textarea,select")) return;
+        e.preventDefault(); e.stopImmediatePropagation(); showAll();
+      }, true);
+      if (deck) deck.addEventListener("wheel", (e) => {
+        if (!onPg()) return;
+        if (performance.now() < cool) { e.preventDefault(); e.stopPropagation(); return; }
+        if (e.deltaY > 0 && !allOn()) { e.preventDefault(); e.stopPropagation(); showAll(); }
+      }, { capture: true, passive: false });
+    }
   }
   return { init };
 })();
